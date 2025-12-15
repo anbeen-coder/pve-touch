@@ -12,6 +12,24 @@
 - ⚙️ **硬件管理** - 添加、编辑和删除虚拟机硬件配置
 - 🔄 **虚拟机控制** - 启动、停止、重启虚拟机
 
+## 📸 界面预览
+
+<div align="center">
+
+### 登录界面
+<img src="screenshots/1.jpg" width="300" alt="登录界面">
+
+### 虚拟机列表
+<img src="screenshots/2.jpg" width="300" alt="虚拟机列表">
+
+### 实时监控
+<img src="screenshots/3.jpg" width="300" alt="实时监控">
+
+### 硬件配置
+<img src="screenshots/4.jpg" width="300" alt="硬件配置">
+
+</div>
+
 ## 🚀 功能
 
 ### 虚拟机管理
