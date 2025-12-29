@@ -1605,7 +1605,8 @@
                                 selection: 'rgba(255, 255, 255, 0.3)'
                             },
                             rows: 24,
-                            cols: 80
+                            cols: 80,
+                            scrollback: 1000
                         });
                         
                         // 3. 加载 fit 插件
@@ -1618,6 +1619,9 @@
                             throw new Error('Terminal element not found');
                         }
                         terminal.open(terminalElement);
+                        
+                        // 等待一小段时间确保终端完全渲染
+                        await new Promise(resolve => setTimeout(resolve, 100));
                         fitAddon.fit();
                         
                         this.shell.terminal = terminal;
@@ -1627,47 +1631,100 @@
                         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
                         const wsUrl = `${protocol}//${window.location.host}/api2/json/nodes/${this.nodename}/vncwebsocket?port=${this.shell.port}&vncticket=${encodeURIComponent(this.shell.ticket)}`;
                         
-                        const socket = new WebSocket(wsUrl);
+                        console.log('[Shell] Creating WebSocket connection');
+                        console.log('[Shell] URL:', wsUrl);
+                        console.log('[Shell] Port:', this.shell.port);
+                        console.log('[Shell] Ticket length:', this.shell.ticket.length);
+                        
+                        // 使用 'binary' 子协议（Proxmox 官方实现）
+                        const socket = new WebSocket(wsUrl, 'binary');
                         socket.binaryType = 'arraybuffer';
                         
+                        console.log('[Shell] WebSocket created, readyState:', socket.readyState);
+                        
+                        let shellConnected = false;
+                        
                         socket.onopen = () => {
-                            this.shell.connected = true;
-                            this.shell.connecting = false;
+                            console.log('[Shell] WebSocket opened, sending auth');
+                            this.shell.connecting = true;
                             
-                            // 发送终端大小
-                            const size = `1:${terminal.cols}:${terminal.rows}:`;
-                            socket.send(size);
+                            // 关键：先发送认证信息（username:ticket\n）
+                            const authMsg = `${this.username}:${this.shell.ticket}\n`;
+                            console.log('[Shell] Sending auth message');
+                            socket.send(authMsg);
                             
-                            // 绑定终端输入事件
+                            // 绑定终端输入事件 - PVE 协议格式: "0:length:data"
                             terminal.onData(data => {
-                                if (socket.readyState === WebSocket.OPEN) {
-                                    socket.send('0:' + data.length + ':' + data);
+                                if (shellConnected && socket.readyState === WebSocket.OPEN) {
+                                    // 使用 unescape(encodeURIComponent(data)) 计算字节长度
+                                    const byteLength = unescape(encodeURIComponent(data)).length;
+                                    const msg = `0:${byteLength}:${data}`;
+                                    socket.send(msg);
                                 }
                             });
+                            
+                            // 设置 ping 定时器（每30秒）
+                            const pingInterval = setInterval(() => {
+                                if (socket.readyState === WebSocket.OPEN) {
+                                    socket.send('2');
+                                }
+                            }, 30000);
+                            
+                            // 保存 interval ID 以便清理
+                            this.shell.pingInterval = pingInterval;
                             
                             // 监听窗口大小变化
                             window.addEventListener('resize', this.handleShellResize);
                         };
                         
                         socket.onmessage = (event) => {
-                            if (typeof event.data === 'string') {
-                                terminal.write(event.data);
-                            } else {
-                                // 处理二进制数据
-                                const decoder = new TextDecoder('utf-8');
-                                const text = decoder.decode(event.data);
-                                terminal.write(text);
+                            try {
+                                const answer = new Uint8Array(event.data);
+                                console.log('[Shell] Received message, length:', answer.length);
+                                
+                                if (shellConnected) {
+                                    // 已连接，直接写入终端
+                                    terminal.write(answer);
+                                } else {
+                                    // 等待 "OK" 响应
+                                    if (answer[0] === 79 && answer[1] === 75) { // "OK"
+                                        console.log('[Shell] Received OK, connection established');
+                                        shellConnected = true;
+                                        this.shell.connected = true;
+                                        this.shell.connecting = false;
+                                        
+                                        // 写入 "OK" 之后的数据
+                                        if (answer.length > 2) {
+                                            terminal.write(answer.slice(2));
+                                        }
+                                        
+                                        // 延迟聚焦和调整大小
+                                        requestAnimationFrame(() => requestAnimationFrame(() => {
+                                            terminal.focus();
+                                            this.shell.fitAddon.fit();
+                                        }));
+                                    } else {
+                                        console.error('[Shell] Did not receive OK, closing connection');
+                                        socket.close();
+                                    }
+                                }
+                            } catch (error) {
+                                console.error('[Shell] Error processing message:', error);
                             }
                         };
                         
                         socket.onerror = (error) => {
-                            console.error('WebSocket error:', error);
+                            console.error('[Shell] WebSocket error:', error);
                             this.shell.error = true;
                             this.shell.connecting = false;
                             this.showToast('终端连接错误', 'error');
                         };
                         
-                        socket.onclose = () => {
+                        socket.onclose = (event) => {
+                            console.log('[Shell] WebSocket closed');
+                            console.log('[Shell] Close code:', event.code);
+                            console.log('[Shell] Close reason:', event.reason);
+                            console.log('[Shell] Was clean:', event.wasClean);
                             this.shell.connected = false;
                             this.shell.connecting = false;
                             if (!this.shell.error) {
@@ -1687,7 +1744,7 @@
                 },
                 
                 handleShellResize() {
-                    if (this.shell.terminal && this.shell.fitAddon && this.shell.socket) {
+                    if (this.shell.terminal && this.shell.fitAddon && this.shell.socket && this.shell.connected) {
                         this.shell.fitAddon.fit();
                         const terminal = this.shell.terminal;
                         if (this.shell.socket.readyState === WebSocket.OPEN) {
@@ -1709,6 +1766,12 @@
                 cleanupShell() {
                     // 移除窗口大小监听
                     window.removeEventListener('resize', this.handleShellResize);
+                    
+                    // 清除 ping interval
+                    if (this.shell.pingInterval) {
+                        clearInterval(this.shell.pingInterval);
+                        this.shell.pingInterval = null;
+                    }
                     
                     // 关闭 WebSocket
                     if (this.shell.socket) {
