@@ -601,6 +601,9 @@
                     currentView: 'login',
                     currentPage: 'list',
                     
+                    // History management
+                    historyStack: [],
+                    
                     // Login form
                     loginForm: {
                         username: '',
@@ -714,6 +717,9 @@
             },
             
             async mounted() {
+                // 监听浏览器返回事件
+                window.addEventListener('popstate', this.handlePopState);
+                
                 // 三层认证检测：模板变量 → Cookie → localStorage
                 
                 // 第一层：检查服务器端模板变量（最优先）
@@ -751,6 +757,9 @@
             },
             
             beforeUnmount() {
+                // 移除浏览器返回事件监听
+                window.removeEventListener('popstate', this.handlePopState);
+                
                 if (this.monitorInterval) {
                     clearInterval(this.monitorInterval);
                 }
@@ -1105,6 +1114,8 @@
                 viewVM(vm) {
                     this.selectedVM = vm;
                     this.currentPage = 'monitor';
+                    // 添加到历史记录
+                    history.pushState({ page: 'monitor', vmid: vm.vmid }, '', '');
                     this.fetchMonitorData();
                     this.startMonitoring();
                 },
@@ -1118,10 +1129,16 @@
                     if (this.countdownInterval) {
                         clearInterval(this.countdownInterval);
                     }
+                    // 使用浏览器返回
+                    if (window.history.length > 1) {
+                        history.back();
+                    }
                 },
                 
                 showConfig() {
                     this.currentPage = 'config';
+                    // 添加到历史记录
+                    history.pushState({ page: 'config', vmid: this.selectedVM?.vmid }, '', '');
                     if (this.monitorInterval) {
                         clearInterval(this.monitorInterval);
                     }
@@ -1135,6 +1152,10 @@
                     this.currentPage = 'monitor';
                     this.fetchMonitorData();
                     this.startMonitoring();
+                    // 使用浏览器返回
+                    if (window.history.length > 1) {
+                        history.back();
+                    }
                 },
                 
                 async startVM(vm) {
@@ -1549,6 +1570,8 @@
                 // Shell methods
                 async openNodeShell() {
                     this.currentPage = 'shell';
+                    // 添加到历史记录
+                    history.pushState({ page: 'shell' }, '', '');
                     // 等待 DOM 更新
                     await this.$nextTick();
                     this.initShell();
@@ -1677,6 +1700,10 @@
                 closeShell() {
                     this.cleanupShell();
                     this.currentPage = 'list';
+                    // 使用浏览器返回
+                    if (window.history.length > 1) {
+                        history.back();
+                    }
                 },
                 
                 cleanupShell() {
@@ -1704,6 +1731,70 @@
                     this.shell.error = false;
                     this.shell.ticket = null;
                     this.shell.port = null;
+                },
+                
+                // 处理浏览器返回事件
+                handlePopState(event) {
+                    const state = event.state;
+                    
+                    if (!state) {
+                        // 没有状态信息，返回到列表页
+                        if (this.currentPage !== 'list') {
+                            this.currentPage = 'list';
+                            this.selectedVM = null;
+                            if (this.monitorInterval) {
+                                clearInterval(this.monitorInterval);
+                            }
+                            if (this.countdownInterval) {
+                                clearInterval(this.countdownInterval);
+                            }
+                            this.cleanupShell();
+                        }
+                        return;
+                    }
+                    
+                    // 根据状态恢复页面
+                    if (state.page === 'monitor' && state.vmid) {
+                        // 恢复到监控页面
+                        const vm = this.vms.find(v => v.vmid === state.vmid);
+                        if (vm) {
+                            this.selectedVM = vm;
+                            this.currentPage = 'monitor';
+                            this.fetchMonitorData();
+                            this.startMonitoring();
+                        }
+                    } else if (state.page === 'config' && state.vmid) {
+                        // 恢复到配置页面
+                        const vm = this.vms.find(v => v.vmid === state.vmid);
+                        if (vm) {
+                            this.selectedVM = vm;
+                            this.currentPage = 'config';
+                            if (this.monitorInterval) {
+                                clearInterval(this.monitorInterval);
+                            }
+                            if (this.countdownInterval) {
+                                clearInterval(this.countdownInterval);
+                            }
+                            this.fetchConfig();
+                        }
+                    } else if (state.page === 'shell') {
+                        // 恢复到 Shell 页面
+                        this.currentPage = 'shell';
+                        this.$nextTick(() => {
+                            this.initShell();
+                        });
+                    } else {
+                        // 默认返回列表页
+                        this.currentPage = 'list';
+                        this.selectedVM = null;
+                        if (this.monitorInterval) {
+                            clearInterval(this.monitorInterval);
+                        }
+                        if (this.countdownInterval) {
+                            clearInterval(this.countdownInterval);
+                        }
+                        this.cleanupShell();
+                    }
                 }
             },
             
